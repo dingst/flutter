@@ -4,6 +4,7 @@
 
 import 'dart:async';
 import 'dart:io' show Platform;
+import 'dart:math' as math;
 import 'dart:ui' as ui show window;
 
 import 'package:flutter/material.dart';
@@ -741,6 +742,11 @@ void main() {
     final Offset firstPos = textOffsetToPosition(tester, testValue.indexOf('First'));
     final Offset secondPos = textOffsetToPosition(tester, testValue.indexOf('Second'));
     final Offset thirdPos = textOffsetToPosition(tester, testValue.indexOf('Third'));
+    final Offset middleStringPos = textOffsetToPosition(tester, testValue.indexOf('irst'));
+    expect(firstPos.dx, 0);
+    expect(secondPos.dx, 0);
+    expect(thirdPos.dx, 0);
+    expect(middleStringPos.dx, 34);
     expect(firstPos.dx, secondPos.dx);
     expect(firstPos.dx, thirdPos.dx);
     expect(firstPos.dy, lessThan(secondPos.dy));
@@ -823,6 +829,8 @@ void main() {
     // Check that the last line of text is not displayed.
     final Offset firstPos = textOffsetToPosition(tester, kMoreThanFourLines.indexOf('First'));
     final Offset fourthPos = textOffsetToPosition(tester, kMoreThanFourLines.indexOf('Fourth'));
+    expect(firstPos.dx, 0);
+    expect(fourthPos.dx, 0);
     expect(firstPos.dx, fourthPos.dx);
     expect(firstPos.dy, lessThan(fourthPos.dy));
     expect(inputBox.hitTest(HitTestResult(), position: inputBox.globalToLocal(firstPos)), isTrue);
@@ -1782,16 +1790,14 @@ void main() {
   testWidgets('setting maxLength shows counter', (WidgetTester tester) async {
     await tester.pumpWidget(const MaterialApp(
       home: Material(
-        child: DefaultTextStyle(
-          style: TextStyle(fontFamily: 'Ahem', fontSize: 10.0),
-          child: Center(
+        child: Center(
             child: TextField(
               maxLength: 10,
             ),
           ),
         ),
       ),
-    ));
+    );
 
     expect(find.text('0/10'), findsOneWidget);
 
@@ -1801,22 +1807,41 @@ void main() {
     expect(find.text('5/10'), findsOneWidget);
   });
 
+  testWidgets(
+      'setting maxLength to TextField.noMaxLength shows only entered length',
+      (WidgetTester tester) async {
+    await tester.pumpWidget(const MaterialApp(
+      home: Material(
+        child: Center(
+            child: TextField(
+              maxLength: TextField.noMaxLength,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('0'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField), '01234');
+    await tester.pump();
+
+    expect(find.text('5'), findsOneWidget);
+  });
+
   testWidgets('TextField identifies as text field in semantics', (WidgetTester tester) async {
     final SemanticsTester semantics = SemanticsTester(tester);
 
     await tester.pumpWidget(
       const MaterialApp(
         home: Material(
-          child: DefaultTextStyle(
-            style: TextStyle(fontFamily: 'Ahem', fontSize: 10.0),
-            child: Center(
+          child: Center(
               child: TextField(
                 maxLength: 10,
               ),
             ),
           ),
         ),
-      ),
     );
 
     expect(semantics, includesNodeWith(flags: <SemanticsFlag>[SemanticsFlag.isTextField]));
@@ -2921,6 +2946,48 @@ void main() {
     expect(focusNode.hasFocus, isFalse);
   });
 
+  testWidgets('TextField displays text with text direction', (WidgetTester tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Material(
+          child: TextField(
+            textDirection: TextDirection.rtl,
+          ),
+        ),
+      ),
+    );
+
+    RenderEditable editable = findRenderEditable(tester);
+
+    await tester.enterText(find.byType(TextField), '0123456789101112');
+    await tester.pumpAndSettle();
+    Offset topLeft = editable.localToGlobal(
+      editable.getLocalRectForCaret(const TextPosition(offset: 10)).topLeft,
+    );
+
+    expect(topLeft.dx, equals(701.0));
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Material(
+          child: TextField(
+            textDirection: TextDirection.ltr,
+          ),
+        ),
+      ),
+    );
+
+    editable = findRenderEditable(tester);
+
+    await tester.enterText(find.byType(TextField), '0123456789101112');
+    await tester.pumpAndSettle();
+    topLeft = editable.localToGlobal(
+      editable.getLocalRectForCaret(const TextPosition(offset: 10)).topLeft,
+    );
+
+    expect(topLeft.dx, equals(160.0));
+  });
+
   testWidgets('TextField semantics', (WidgetTester tester) async {
     final SemanticsTester semantics = SemanticsTester(tester);
     final TextEditingController controller = TextEditingController();
@@ -3112,9 +3179,7 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: DefaultTextStyle(
-            style: const TextStyle(fontSize: 12.0, fontFamily: 'Ahem'),
-            child: MediaQuery(
+          body: MediaQuery(
               data: MediaQueryData.fromWindow(ui.window).copyWith(textScaleFactor: 4.0),
               child: Center(
                 child: TextField(
@@ -3125,12 +3190,155 @@ void main() {
             ),
           ),
         ),
-      ),
     );
 
     await tester.tap(find.byType(TextField));
     final Rect labelRect = tester.getRect(find.text('Label'));
     final Rect fieldRect = tester.getRect(find.text('Just some text'));
     expect(labelRect.bottom, lessThanOrEqualTo(fieldRect.top));
+  });
+
+  testWidgets('TextField scrolls into view but does not bounce (SingleChildScrollView)', (WidgetTester tester) async {
+    // This is a regression test for https://github.com/flutter/flutter/issues/20485
+
+    final Key textField1 = UniqueKey();
+    final Key textField2 = UniqueKey();
+    final ScrollController scrollController = ScrollController();
+
+    double minOffset;
+    double maxOffset;
+
+    scrollController.addListener(() {
+      final double offset = scrollController.offset;
+      minOffset = math.min(minOffset ?? offset, offset);
+      maxOffset = math.max(maxOffset ?? offset, offset);
+    });
+
+    Widget buildFrame(Axis scrollDirection) {
+      return MaterialApp(
+        home: Scaffold(
+          body: SafeArea(
+            child: SingleChildScrollView(
+              physics: const BouncingScrollPhysics(),
+              controller: scrollController,
+              child: Column(
+                children: <Widget>[
+                  SizedBox( // visible when scrollOffset is 0.0
+                    height: 100.0,
+                    width: 100.0,
+                    child: TextField(key: textField1, scrollPadding: const EdgeInsets.all(200.0)),
+                  ),
+                  const SizedBox(
+                    height: 600.0, // Same size as the frame. Initially
+                    width: 800.0,  // textField2 is not visible
+                  ),
+                  SizedBox( // visible when scrollOffset is 200.0
+                    height: 100.0,
+                    width: 100.0,
+                    child: TextField(key: textField2, scrollPadding: const EdgeInsets.all(200.0)),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    await tester.pumpWidget(buildFrame(Axis.vertical));
+    await tester.enterText(find.byKey(textField1), '1');
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(textField2), '2'); //scroll textField2 into view
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(textField1), '3'); //scroll textField1 back into view
+    await tester.pumpAndSettle();
+
+    expect(minOffset, 0.0);
+    expect(maxOffset, 200.0);
+
+    minOffset = null;
+    maxOffset = null;
+
+    await tester.pumpWidget(buildFrame(Axis.horizontal));
+    await tester.enterText(find.byKey(textField1), '1');
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(textField2), '2'); //scroll textField2 into view
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(textField1), '3'); //scroll textField1 back into view
+    await tester.pumpAndSettle();
+
+    expect(minOffset, 0.0);
+    expect(maxOffset, 200.0);
+  });
+
+  testWidgets('TextField scrolls into view but does not bounce (ListView)', (WidgetTester tester) async {
+    // This is a regression test for https://github.com/flutter/flutter/issues/20485
+
+    final Key textField1 = UniqueKey();
+    final Key textField2 = UniqueKey();
+    final ScrollController scrollController = ScrollController();
+
+    double minOffset;
+    double maxOffset;
+
+    scrollController.addListener(() {
+      final double offset = scrollController.offset;
+      minOffset = math.min(minOffset ?? offset, offset);
+      maxOffset = math.max(maxOffset ?? offset, offset);
+    });
+
+    Widget buildFrame(Axis scrollDirection) {
+      return MaterialApp(
+        home: Scaffold(
+          body: SafeArea(
+            child: ListView(
+              physics: const BouncingScrollPhysics(),
+              controller: scrollController,
+              children: <Widget>[
+                SizedBox( // visible when scrollOffset is 0.0
+                  height: 100.0,
+                  width: 100.0,
+                  child: TextField(key: textField1, scrollPadding: const EdgeInsets.all(200.0)),
+                ),
+                const SizedBox(
+                  height: 450.0, // 50.0 smaller than the overall frame so that both
+                  width: 650.0,  // textfields are always partially visible.
+                ),
+                SizedBox( // visible when scrollOffset = 50.0
+                  height: 100.0,
+                  width: 100.0,
+                  child: TextField(key: textField2, scrollPadding: const EdgeInsets.all(200.0)),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    await tester.pumpWidget(buildFrame(Axis.vertical));
+    await tester.enterText(find.byKey(textField1), '1'); // textfield1 is visible
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(textField2), '2'); //scroll textField2 into view
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(textField1), '3'); //scroll textField1 back into view
+    await tester.pumpAndSettle();
+
+    expect(minOffset, 0.0);
+    expect(maxOffset, 50.0);
+
+    minOffset = null;
+    maxOffset = null;
+
+    await tester.pumpWidget(buildFrame(Axis.horizontal));
+    await tester.enterText(find.byKey(textField1), '1'); // textfield1 is visible
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(textField2), '2'); //scroll textField2 into view
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(textField1), '3'); //scroll textField1 back into view
+    await tester.pumpAndSettle();
+
+    expect(minOffset, 0.0);
+    expect(maxOffset, 50.0);
   });
 }
